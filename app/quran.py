@@ -77,6 +77,100 @@ def random_ayah_reference() -> int:
     return random.randint(1, TOTAL_AYAHS_IN_QURAN)
 
 
+async def get_ayah_range(
+    surah: int,
+    ayah_start: int,
+    ayah_end: int,
+    reciter_key: str = DEFAULT_RECITER,
+    audio_bitrate: int = 128,
+):
+    """
+    يجلب نطاق آيات متتالية من نفس السورة (مثلاً 2:1 إلى 2:5) ويرجعها كوحدة واحدة:
+    نص مدمج (يُعرض ككتلة واحدة، والمقطع الطويل يتحرك تلقائيًا بفضل build_ayah_overlay)
+    + قائمة روابط صوت كل آية على حدة (تُدمج لاحقًا بملف صوت واحد قبل توليد الفيديو).
+    """
+    if ayah_end < ayah_start:
+        raise QuranAPIError("رقم آخر آية لازم يكون أكبر من أو يساوي أول آية")
+    if (ayah_end - ayah_start) > 30:
+        raise QuranAPIError("الحد الأقصى 30 آية بالمقطع الواحد (حتى ما يصير الفيديو طويل جدًا)")
+
+    ayahs = []
+    for n in range(ayah_start, ayah_end + 1):
+        data = await get_ayah(f"{surah}:{n}", reciter_key=reciter_key, audio_bitrate=audio_bitrate)
+        ayahs.append(data)
+
+    combined_text = " ".join(a["ayah_text"] for a in ayahs)
+
+    return {
+        "ayah_text": combined_text,
+        "surah_name_ar": ayahs[0]["surah_name_ar"],
+        "surah_name_en": ayahs[0]["surah_name_en"],
+        "surah_number": ayahs[0]["surah_number"],
+        "ayah_number_in_surah": ayah_start,      # لأغراض التسمية
+        "ayah_range_label": f"{ayah_start}-{ayah_end}" if ayah_end > ayah_start else str(ayah_start),
+        "audio_urls": [a["audio_url"] for a in ayahs],
+        "reciter_key": reciter_key,
+    }
+
+
+async def download_and_concat_audio(audio_urls: list[str]) -> bytes:
+    """
+    يحمّل عدة ملفات صوت (لآيات متتالية) ويدمجها بملف mp3 واحد متصل
+    عبر ffmpeg concat demuxer (بدون إعادة ترميز، سريع وبلا فقدان جودة).
+    """
+    import subprocess
+    import tempfile
+    import os
+    import uuid
+
+    if len(audio_urls) == 1:
+        return await download_audio(audio_urls[0])
+
+    work_dir = tempfile.mkdtemp(prefix=f"concat_{uuid.uuid4().hex}_")
+    file_paths = []
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            for i, url in enumerate(audio_urls):
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    raise QuranAPIError(f"تعذر تحميل الصوت من {url}")
+                path = os.path.join(work_dir, f"part_{i:03d}.mp3")
+                with open(path, "wb") as f:
+                    f.write(resp.content)
+                file_paths.append(path)
+
+        list_path = os.path.join(work_dir, "list.txt")
+        with open(list_path, "w") as f:
+            for p in file_paths:
+                f.write(f"file '{p}'\n")
+
+        out_path = os.path.join(work_dir, "combined.mp3")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out_path],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise QuranAPIError(f"فشل دمج الصوت: {result.stderr.decode(errors='ignore')[-500:]}")
+
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in file_paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        for extra in ("list.txt", "combined.mp3"):
+            try:
+                os.remove(os.path.join(work_dir, extra))
+            except OSError:
+                pass
+        try:
+            os.rmdir(work_dir)
+        except OSError:
+            pass
+
+
 async def download_audio(audio_url: str) -> bytes:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(audio_url)

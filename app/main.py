@@ -1,33 +1,33 @@
 """
 Quran Reels API
 ================
-أداة تولّد فيديو عمودي (9:16) جاهز للنشر على انستقرام/تيك توك، لآية قرآنية واحدة:
-النص العربي + تلاوة صوتية — بضغطة زر واحدة عبر API.
+أداة تولّد فيديو عمودي (9:16) جاهز للنشر على انستقرام/تيك توك، من آية واحدة
+أو مقطع آيات متتالية: النص العربي + تلاوة صوتية — بضغطة زر واحدة عبر API.
 
-يتكيّف القالب تلقائيًا حسب طول الآية:
-  - آية قصيرة/متوسطة → خط كبير وثابت في منتصف الشاشة.
-  - آية طويلة → خط مريح للقراءة مع تمرير (Scroll) سلس متزامن مع مدة التلاوة،
+يتكيّف القالب تلقائيًا حسب طول النص:
+  - نص قصير/متوسط → خط كبير وثابت في منتصف الشاشة.
+  - نص طويل → خط مريح للقراءة مع تمرير (Scroll) سلس متزامن مع مدة التلاوة،
     بدل تصغير الخط بشكل مبالغ فيه أو قصّ النص.
 
 نقاط النهاية:
-  GET /health
-      فحص سريع للتأكد إن الخدمة شغالة.
+  GET /health       فحص سريع للتأكد إن الخدمة شغالة.
+  GET /reciters     قائمة القراء المتاحين.
+  GET /palettes     قائمة الخلفيات المتاحة (بالاسم والرقم).
+  GET /generate     يولّد الفيديو ويرجعه مباشرة كملف mp4.
 
-  GET /reciters
-      قائمة القراء المتاحين.
+  معاملات /generate (كلها اختيارية):
+    - surah      : رقم السورة (1-114)
+    - ayah       : رقم آية واحدة داخل السورة
+    - ayah_start : أول آية بمقطع من عدة آيات (بدل ayah)
+    - ayah_end   : آخر آية بمقطع من عدة آيات (لازم تكون مع ayah_start)
+    - random     : true لاختيار آية عشوائية من كامل القرآن
+    - reciter    : alafasy (افتراضي) / sudais / husary / minshawi
+    - palette    : رقم خلفية محدد (0-5). فاضي = عشوائي كل مرة.
 
-  GET /generate
-      يولّد الفيديو ويرجعه مباشرة كملف mp4.
-      المعاملات (query params):
-        - surah   (اختياري): رقم السورة 1-114
-        - ayah    (اختياري): رقم الآية داخل السورة
-        - random  (اختياري): true لاختيار آية عشوائية من كامل القرآن
-        - reciter (اختياري): alafasy (افتراضي) / sudais / husary / minshawi
-
-      أمثلة:
-        /generate?surah=2&ayah=255&reciter=alafasy
-        /generate?random=true
-        /generate?surah=112&ayah=1
+  أمثلة:
+    /generate?surah=2&ayah=255&reciter=alafasy
+    /generate?surah=2&ayah_start=1&ayah_end=5&palette=3
+    /generate?random=true
 """
 import os
 import tempfile
@@ -42,15 +42,24 @@ from app.quran import (
     DEFAULT_RECITER,
     QuranAPIError,
     get_ayah,
+    get_ayah_range,
     random_ayah_reference,
     download_audio,
+    download_and_concat_audio,
 )
-from app.render import build_label_overlay, build_ayah_overlay, render_video, choose_palette
+from app.render import (
+    build_label_overlay,
+    build_ayah_overlay,
+    render_video,
+    choose_palette,
+    PALETTES,
+    PALETTE_NAMES,
+)
 
 app = FastAPI(
     title="Quran Reels API",
     description="يولّد فيديوهات قصيرة لآيات قرآنية (نص + تلاوة) بضغطة زر، جاهزة للربط مع Make.com",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 
@@ -65,6 +74,12 @@ async def list_reciters():
     return {"reciters": list(RECITERS.keys()), "default": DEFAULT_RECITER}
 
 
+@app.get("/palettes")
+async def list_palettes():
+    """يرجع قائمة الخلفيات المتاحة بالاسم ورقمها، يفيد باختيار خلفية محددة من Google Sheet."""
+    return {"palettes": [{"index": i, "name": name} for i, name in enumerate(PALETTE_NAMES)]}
+
+
 def _cleanup(*paths: str):
     for p in paths:
         try:
@@ -76,29 +91,59 @@ def _cleanup(*paths: str):
 @app.get("/generate")
 async def generate(
     surah: int | None = Query(None, ge=1, le=114, description="رقم السورة (1-114)"),
-    ayah: int | None = Query(None, ge=1, description="رقم الآية داخل السورة"),
+    ayah: int | None = Query(None, ge=1, description="رقم آية واحدة داخل السورة"),
+    ayah_start: int | None = Query(None, ge=1, description="أول آية بمقطع من عدة آيات"),
+    ayah_end: int | None = Query(None, ge=1, description="آخر آية بمقطع من عدة آيات"),
     random_verse: bool = Query(False, alias="random", description="اختيار آية عشوائية من كامل القرآن"),
     reciter: str = Query(DEFAULT_RECITER, description="مفتاح القارئ"),
+    palette_index: int | None = Query(None, ge=0, le=len(PALETTES) - 1, alias="palette",
+                                       description="رقم خلفية محدد (0-5)، فاضي = عشوائي"),
 ):
-    # 1) تحديد الآية المطلوبة
-    if random_verse or (surah is None and ayah is None):
-        reference: int | str = random_ayah_reference()
+    is_range = ayah_start is not None or ayah_end is not None
+
+    # 1) تحديد الآية/المقطع المطلوب وجلب النص + الصوت
+    if random_verse or (surah is None and ayah is None and not is_range):
+        reference = random_ayah_reference()
+        try:
+            data = await get_ayah(reference, reciter_key=reciter)
+        except QuranAPIError as e:
+            raise HTTPException(502, str(e))
+        try:
+            audio_bytes = await download_audio(data["audio_url"])
+        except QuranAPIError as e:
+            raise HTTPException(502, str(e))
+        ayah_label_number = str(data["ayah_number_in_surah"])
+
+    elif is_range:
+        if surah is None or ayah_start is None or ayah_end is None:
+            raise HTTPException(400, "وضع المقطع يحتاج surah و ayah_start و ayah_end الثلاثة مع بعض")
+        try:
+            data = await get_ayah_range(surah, ayah_start, ayah_end, reciter_key=reciter)
+        except QuranAPIError as e:
+            raise HTTPException(502, str(e))
+        try:
+            audio_bytes = await download_and_concat_audio(data["audio_urls"])
+        except QuranAPIError as e:
+            raise HTTPException(502, str(e))
+        ayah_label_number = data["ayah_range_label"]
+
     elif surah is not None and ayah is not None:
         reference = f"{surah}:{ayah}"
+        try:
+            data = await get_ayah(reference, reciter_key=reciter)
+        except QuranAPIError as e:
+            raise HTTPException(502, str(e))
+        try:
+            audio_bytes = await download_audio(data["audio_url"])
+        except QuranAPIError as e:
+            raise HTTPException(502, str(e))
+        ayah_label_number = str(data["ayah_number_in_surah"])
+
     else:
-        raise HTTPException(400, "لازم تحدد surah و ayah معًا، أو تستخدم random=true")
-
-    # 2) جلب نص الآية من Al Quran Cloud API
-    try:
-        data = await get_ayah(reference, reciter_key=reciter)
-    except QuranAPIError as e:
-        raise HTTPException(502, str(e))
-
-    # 3) تحميل ملف الصوت (التلاوة) كاملاً
-    try:
-        audio_bytes = await download_audio(data["audio_url"])
-    except QuranAPIError as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(
+            400,
+            "حدد إما (surah + ayah) لآية واحدة، أو (surah + ayah_start + ayah_end) لمقطع، أو random=true",
+        )
 
     work_id = uuid.uuid4().hex
     audio_path = os.path.join(tempfile.gettempdir(), f"audio_{work_id}.mp3")
@@ -107,19 +152,19 @@ async def generate(
     with open(audio_path, "wb") as f:
         f.write(audio_bytes)
 
-    # 4) رسم الطبقات: لوحة ألوان عشوائية + العنوان (ثابت) + نص الآية (ثابت أو متحرك حسب الطول)
-    palette = choose_palette()
-    label = f"{data['surah_name_ar']} - آية {data['ayah_number_in_surah']}"
+    # 2) رسم الطبقات: لوحة ألوان (محددة أو عشوائية) + العنوان + نص الآية/المقطع
+    palette = choose_palette(index=palette_index)
+    label = f"{data['surah_name_ar']} - آية {ayah_label_number}"
     label_png = build_label_overlay(label, accent=palette["accent"])
     ayah_png, ayah_height, needs_scroll = build_ayah_overlay(data["ayah_text"])
 
-    # 5) توليد الفيديو النهائي عبر ffmpeg (يضمن تشغيل الصوت كاملاً من أول لآخر ثانية)
+    # 3) توليد الفيديو النهائي عبر ffmpeg (يضمن تشغيل الصوت كاملاً من أول لآخر ثانية)
     try:
         render_video(label_png, ayah_png, ayah_height, needs_scroll, audio_path, output_path, palette=palette)
     finally:
         _cleanup(audio_path, label_png, ayah_png)
 
-    filename = f"{data['surah_name_en']}_{data['ayah_number_in_surah']}.mp4"
+    filename = f"{data['surah_name_en']}_{ayah_label_number}.mp4"
 
     return FileResponse(
         output_path,

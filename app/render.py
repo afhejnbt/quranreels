@@ -29,13 +29,16 @@ FONT_UI = os.path.join(BASE_DIR, "fonts", "NotoKufiArabic.ttf")
 # مجموعة لوحات ألوان (خلفية علوية/سفلية + لون العنوان) — تُختار عشوائيًا كل مرة
 # حتى ما تكون كل الفيديوهات متطابقة بصريًا. الألوان مختارة لتبقى هادئة ومناسبة
 # لمحتوى قرآني (لا صور/فيديوهات خارجية، فقط تدرجات تركيبية بدون أي مشاكل حقوق).
+# كل لوحة لها اسم صريح يفيد باختيارها يدويًا من Google Sheet / Make (عبر رقمها 0-5).
+PALETTE_NAMES = ["أخضر داكن", "كحلي بنفسجي", "بني دافئ", "تركوازي", "عنابي", "أزرق مخضر"]
+
 PALETTES = [
-    {"top": "0x0b2e28", "bottom": "0x08151a", "accent": (212, 175, 55)},   # أخضر داكن + ذهبي
-    {"top": "0x1a2a4a", "bottom": "0x0a0e1a", "accent": (201, 162, 255)},  # كحلي + بنفسجي فاتح
-    {"top": "0x2e1a0b", "bottom": "0x140a05", "accent": (230, 190, 120)},  # بني دافئ + كريمي
-    {"top": "0x0d2b3e", "bottom": "0x061119", "accent": (120, 200, 210)},  # تركوازي داكن + سماوي
-    {"top": "0x2a0b2e", "bottom": "0x0f0514", "accent": (220, 150, 190)},  # عنابي داكن + وردي فاتح
-    {"top": "0x0b1f2e", "bottom": "0x05090f", "accent": (170, 210, 160)},  # كحلي مزرق + أخضر فاتح
+    {"top": "0x0b2e28", "bottom": "0x08151a", "accent": (212, 175, 55)},   # 0: أخضر داكن + ذهبي
+    {"top": "0x1a2a4a", "bottom": "0x0a0e1a", "accent": (201, 162, 255)},  # 1: كحلي + بنفسجي فاتح
+    {"top": "0x2e1a0b", "bottom": "0x140a05", "accent": (230, 190, 120)},  # 2: بني دافئ + كريمي
+    {"top": "0x0d2b3e", "bottom": "0x061119", "accent": (120, 200, 210)},  # 3: تركوازي داكن + سماوي
+    {"top": "0x2a0b2e", "bottom": "0x0f0514", "accent": (220, 150, 190)},  # 4: عنابي داكن + وردي فاتح
+    {"top": "0x0b1f2e", "bottom": "0x05090f", "accent": (170, 210, 160)},  # 5: كحلي مزرق + أخضر فاتح
 ]
 
 # اتجاهات تدرج متنوعة (من نقطة إلى نقطة داخل الإطار) — عشان التدرج نفسه يختلف شكله
@@ -94,9 +97,15 @@ def _font_size_for_length(char_count: int) -> int:
         return 54
 
 
-def choose_palette() -> dict:
-    """يختار لوحة ألوان واتجاه تدرج عشوائيًا، عشان تختلف كل الفيديوهات عن بعضها."""
-    palette = dict(random.choice(PALETTES))
+def choose_palette(index: int | None = None) -> dict:
+    """
+    يختار لوحة ألوان: رقم محدد (0-5) إذا انطلب، وإلا عشوائيًا.
+    اتجاه التدرج دايمًا عشوائي (حتى لو نفس اللوحة، يختلف شكلها شوي كل مرة).
+    """
+    if index is not None:
+        palette = dict(PALETTES[index % len(PALETTES)])
+    else:
+        palette = dict(random.choice(PALETTES))
     palette["direction"] = random.choice(GRADIENT_DIRECTIONS)
     return palette
 

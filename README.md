@@ -40,16 +40,22 @@ GET /generate?surah=2&ayah=255&reciter=alafasy
 | المعامل | إجباري؟ | الوصف |
 |---|---|---|
 | `surah` | لا | رقم السورة (1-114) |
-| `ayah` | لا | رقم الآية داخل السورة |
+| `ayah` | لا | رقم آية واحدة (استخدمها بدون `ayah_start`/`ayah_end`) |
+| `ayah_start` | لا | أول آية بمقطع من عدة آيات متتالية |
+| `ayah_end` | لا | آخر آية بمقطع من عدة آيات متتالية (حد أقصى 30 آية بالمقطع) |
 | `random` | لا | `true` لاختيار آية عشوائية من كامل القرآن |
 | `reciter` | لا | `alafasy` (افتراضي) / `sudais` / `husary` / `minshawi` |
+| `palette` | لا | رقم خلفية محدد 0-5 (شوف `/palettes`). فاضي = عشوائي كل مرة |
 
 أمثلة:
 ```
 /generate?surah=112&ayah=1
 /generate?random=true
 /generate?surah=2&ayah=255&reciter=sudais
+/generate?surah=112&ayah_start=1&ayah_end=4&palette=3
 ```
+
+> استخدم إما `ayah` (لآية وحدة) أو `ayah_start`+`ayah_end` (لمقطع آيات) — مو الاثنين مع بعض.
 
 ---
 
@@ -94,21 +100,43 @@ git push -u origin main
 
 ## 3) الربط مع Make.com
 
-### السيناريو المقترح
+### وضعان ممكنان — تختار واحد أو تدمجهم
 
+**أ) عشوائي بالكامل (بدون شيت):**
 ```
-[Scheduler: يوميًا 9 صباحًا]
-        ↓
-[HTTP Module → GET https://quran-reels-api.onrender.com/generate?random=true]
-        ↓ (الرد يكون ملف mp4 مباشرة)
-[Instagram Module → نشر Reel من محتوى الملف الراجع]
+[Scheduler: يوميًا 9 صباحًا] → [HTTP: GET /generate?random=true] → [نشر]
 ```
+
+**ب) محدد يدويًا من Google Sheet (أنت تتحكم بالسورة/الآيات/الخلفية):**
+
+أنشئ شيت بهذي الأعمدة:
+
+| العمود | مثال | ملاحظة |
+|---|---|---|
+| `surah` | `2` | رقم السورة |
+| `ayah_start` | `1` | أول آية (لو آية وحدة، خله = `ayah_end`) |
+| `ayah_end` | `5` | آخر آية |
+| `palette` | `3` | رقم خلفية (شوف `/palettes`)، فاضي = عشوائي |
+| `posted` | فاضي / `yes` | Make يبحث عن الصفوف الفاضية بس |
+
+سيناريو Make:
+```
+[Scheduler] → [Google Sheets: Search Rows (posted فاضي، أقدم صف)]
+      ↓
+[HTTP: GET /generate?surah={{surah}}&ayah_start={{ayah_start}}&ayah_end={{ayah_end}}&palette={{palette}}]
+      ↓ (الرد ملف mp4 مباشرة)
+[Instagram/TikTok: نشر]
+      ↓
+[Google Sheets: Update Row → posted = yes]
+```
+
+بهالطريقة تتحكم بالضبط أي سورة وآيات ونشر، وتقدر تسيب عمود `palette` فاضي بأي صف تبيه عشوائي وتحدده برقم بالصفوف اللي تبي خلفية معينة لها — الاثنين يشتغلون بنفس الشيت.
 
 ### إعداد موديول HTTP في Make
 
 1. أضف موديول **HTTP → Make a request**.
-2. URL: `https://quran-reels-api.onrender.com/generate?random=true`
-   (أو حدد آية معينة عبر `surah` و `ayah` بدل `random`).
+2. URL: يتكون من قيم الشيت (استخدم "Map" بموديول Make لتعبئة `{{surah}}` وغيرها من أعمدة Google Sheets)،
+   أو ثابت `https://quran-reels-api.onrender.com/generate?random=true` للوضع العشوائي.
 3. Method: `GET`
 4. **مهم:** فعّل خيار **"Parse response"** واختر تنسيق **"Binary"** (أو ما يعادلها
    بحسب واجهة Make الحالية) عشان يتعامل مع الرد كملف فيديو لا نص.
