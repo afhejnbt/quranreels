@@ -91,8 +91,11 @@ async def get_ayah_range(
     """
     if ayah_end < ayah_start:
         raise QuranAPIError("رقم آخر آية لازم يكون أكبر من أو يساوي أول آية")
-    if (ayah_end - ayah_start) > 30:
-        raise QuranAPIError("الحد الأقصى 30 آية بالمقطع الواحد (حتى ما يصير الفيديو طويل جدًا)")
+    if (ayah_end - ayah_start) > 10:
+        raise QuranAPIError(
+            "الحد الأقصى 10 آيات بالمقطع الواحد (حتى ما يصير الفيديو طويل جدًا "
+            "ويستهلك ذاكرة أكثر من طاقة الاستضافة المجانية)"
+        )
 
     ayahs = []
     for n in range(ayah_start, ayah_end + 1):

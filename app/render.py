@@ -41,13 +41,10 @@ PALETTES = [
     {"top": "0x0b1f2e", "bottom": "0x05090f", "accent": (170, 210, 160)},  # 5: كحلي مزرق + أخضر فاتح
 ]
 
-# اتجاهات تدرج متنوعة (من نقطة إلى نقطة داخل الإطار) — عشان التدرج نفسه يختلف شكله
-GRADIENT_DIRECTIONS = [
-    lambda w, h: (w // 2, 0, w // 2, h),        # من فوق لتحت
-    lambda w, h: (0, 0, w, h),                  # قطري: يسار-فوق إلى يمين-تحت
-    lambda w, h: (w, 0, 0, h),                  # قطري: يمين-فوق إلى يسار-تحت
-    lambda w, h: (0, h // 2, w, h // 2),        # من يسار ليمين
-]
+# اتجاهات تدرج متنوعة — أسماء بسيطة تُستخدم لرسم الخلفية كصورة PIL ثابتة
+# (بدل حسابها رياضيًا لكل فريم بالفيديو عبر ffmpeg، وهذا يوفر ذاكرة كبيرة
+# على استضافات محدودة الموارد زي الخطة المجانية من Render).
+GRADIENT_DIRECTION_NAMES = ["vertical", "diag_tlbr", "diag_trbl", "horizontal"]
 
 # منطقة عرض نص الآية (بين شريط العنوان وهامش الأسفل)
 REGION_TOP = 300
@@ -106,8 +103,50 @@ def choose_palette(index: int | None = None) -> dict:
         palette = dict(PALETTES[index % len(PALETTES)])
     else:
         palette = dict(random.choice(PALETTES))
-    palette["direction"] = random.choice(GRADIENT_DIRECTIONS)
+    palette["direction_name"] = random.choice(GRADIENT_DIRECTION_NAMES)
     return palette
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = hex_color.replace("0x", "")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def build_gradient_background(palette: dict) -> str:
+    """
+    يرسم خلفية متدرجة كصورة PNG ثابتة (مرة وحدة بس، رخيصة على الذاكرة):
+    نرسم رقعة صغيرة (64×64) فيها التدرج بالاتجاه المطلوب، ثم نكبّرها بسلاسة
+    لحجم الفيديو الكامل. هذا أخف بكثير من حساب التدرج رياضيًا لكل فريم بالفيديو
+    (اللي كان يستهلك ذاكرة زايدة وتسبب بتوقف الخدمة على استضافة محدودة الموارد).
+    """
+    top = _hex_to_rgb(palette["top"])
+    bottom = _hex_to_rgb(palette["bottom"])
+    direction = palette.get("direction_name", "vertical")
+
+    patch_size = 64
+    patch = Image.new("RGB", (patch_size, patch_size))
+    pixels = patch.load()
+    denom = 2 * (patch_size - 1)
+    for y in range(patch_size):
+        for x in range(patch_size):
+            if direction == "vertical":
+                t = y / (patch_size - 1)
+            elif direction == "horizontal":
+                t = x / (patch_size - 1)
+            elif direction == "diag_tlbr":
+                t = (x + y) / denom
+            else:  # diag_trbl
+                t = ((patch_size - 1 - x) + y) / denom
+            pixels[x, y] = (
+                int(top[0] + (bottom[0] - top[0]) * t),
+                int(top[1] + (bottom[1] - top[1]) * t),
+                int(top[2] + (bottom[2] - top[2]) * t),
+            )
+
+    bg = patch.resize((WIDTH, HEIGHT), Image.BILINEAR)
+    out_path = os.path.join(tempfile.gettempdir(), f"bg_{uuid.uuid4().hex}.png")
+    bg.save(out_path)
+    return out_path
 
 
 def build_label_overlay(surah_label: str, accent: tuple[int, int, int] = (212, 175, 55)) -> str:
@@ -175,18 +214,14 @@ def get_audio_duration(audio_path: str) -> float:
 
 def render_video(label_png: str, ayah_png: str, ayah_height: int, needs_scroll: bool,
                   audio_path: str, output_path: str, palette: dict | None = None) -> None:
-    """يدمج: خلفية متدرجة (تختلف ألوانها واتجاهها كل مرة) + طبقة العنوان + طبقة الآية + الصوت كاملاً."""
+    """يدمج: خلفية متدرجة ثابتة (صورة، تختلف ألوانها واتجاهها كل مرة) + طبقة العنوان + طبقة الآية + الصوت كاملاً."""
     if palette is None:
         palette = choose_palette()
 
     duration = get_audio_duration(audio_path)
     total_duration = duration + 0.8  # هامش بسيط بالنهاية حتى ما ينقطع الصوت فجأة
 
-    x0, y0, x1, y1 = palette["direction"](WIDTH, HEIGHT)
-    gradient_filter = (
-        f"gradients=s={WIDTH}x{HEIGHT}:c0={palette['top']}:c1={palette['bottom']}:"
-        f"x0={x0}:y0={y0}:x1={x1}:y1={y1}:duration={total_duration}:rate=30"
-    )
+    background_png = build_gradient_background(palette)
 
     if needs_scroll:
         crop_y_max = ayah_height - REGION_HEIGHT
@@ -206,19 +241,27 @@ def render_video(label_png: str, ayah_png: str, ayah_height: int, needs_scroll: 
 
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", gradient_filter,
+        "-loop", "1", "-i", background_png,
         "-loop", "1", "-i", label_png,
         "-loop", "1", "-i", ayah_png,
         "-i", audio_path,
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "3:a",
         "-t", str(total_duration),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        # preset أخف (ultrafast) + خيط واحد (threads=1) عشان يضل استهلاك
+        # الذاكرة تحت سقف الاستضافات المجانية المحدودة (زي Render 512MB)
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "1",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "160k",
+        "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         output_path,
     ]
-    result = subprocess.run(cmd, capture_output=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"فشل ffmpeg:\n{result.stderr.decode(errors='ignore')[-2000:]}")
+    try:
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"فشل ffmpeg:\n{result.stderr.decode(errors='ignore')[-2000:]}")
+    finally:
+        try:
+            os.remove(background_png)
+        except OSError:
+            pass
