@@ -88,17 +88,44 @@ def _cleanup(*paths: str):
             pass
 
 
+def _opt_int(value: str | None, field_name: str, min_value: int | None = None,
+             max_value: int | None = None) -> int | None:
+    """
+    يحوّل قيمة query param نصية إلى رقم صحيح اختياري، ويتعامل مع القيمة الفاضية
+    ("") كأنها ما أُرسلت أصلاً — هذا يحصل كثير لما Make.com يعوّض متغير من خلية
+    فاضية بجوجل شيتس (يرسل &palette= فاضي بدل ما يحذف المعامل بالكامل).
+    """
+    if value is None or value.strip() == "":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise HTTPException(400, f"قيمة غير صحيحة لـ {field_name}: '{value}' (لازم تكون رقم صحيح)")
+    if min_value is not None and parsed < min_value:
+        raise HTTPException(400, f"{field_name} لازم يكون {min_value} أو أكبر")
+    if max_value is not None and parsed > max_value:
+        raise HTTPException(400, f"{field_name} لازم يكون {max_value} أو أقل")
+    return parsed
+
+
 @app.get("/generate")
 async def generate(
-    surah: int | None = Query(None, ge=1, le=114, description="رقم السورة (1-114)"),
-    ayah: int | None = Query(None, ge=1, description="رقم آية واحدة داخل السورة"),
-    ayah_start: int | None = Query(None, ge=1, description="أول آية بمقطع من عدة آيات"),
-    ayah_end: int | None = Query(None, ge=1, description="آخر آية بمقطع من عدة آيات"),
+    surah: str | None = Query(None, description="رقم السورة (1-114)"),
+    ayah: str | None = Query(None, description="رقم آية واحدة داخل السورة"),
+    ayah_start: str | None = Query(None, description="أول آية بمقطع من عدة آيات"),
+    ayah_end: str | None = Query(None, description="آخر آية بمقطع من عدة آيات"),
     random_verse: bool = Query(False, alias="random", description="اختيار آية عشوائية من كامل القرآن"),
     reciter: str = Query(DEFAULT_RECITER, description="مفتاح القارئ"),
-    palette_index: int | None = Query(None, ge=0, le=len(PALETTES) - 1, alias="palette",
-                                       description="رقم خلفية محدد (0-5)، فاضي = عشوائي"),
+    palette: str | None = Query(None, description="رقم خلفية محدد (0-5)، فاضي = عشوائي"),
 ):
+    # كل المعاملات الرقمية تمر عبر _opt_int عشان تتقبل القيم الفاضية بأمان
+    # (حالة شائعة عند التعويض من خلايا Google Sheets فاضية عبر Make.com).
+    surah = _opt_int(surah, "surah", 1, 114)
+    ayah = _opt_int(ayah, "ayah", 1)
+    ayah_start = _opt_int(ayah_start, "ayah_start", 1)
+    ayah_end = _opt_int(ayah_end, "ayah_end", 1)
+    palette_index = _opt_int(palette, "palette", 0, len(PALETTES) - 1)
+
     is_range = ayah_start is not None or ayah_end is not None
 
     # 1) تحديد الآية/المقطع المطلوب وجلب النص + الصوت
