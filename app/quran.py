@@ -2,7 +2,13 @@
 وحدة الاتصال بـ Al Quran Cloud API (مجاني، بدون مفتاح API)
 التوثيق: https://alquran.cloud/api
 """
+import asyncio
+import os
 import random
+import subprocess
+import tempfile
+import uuid
+
 import httpx
 
 QURAN_API_BASE = "https://api.alquran.cloud/v1"
@@ -97,10 +103,12 @@ async def get_ayah_range(
             "ويستهلك ذاكرة أكثر من طاقة الاستضافة المجانية)"
         )
 
-    ayahs = []
-    for n in range(ayah_start, ayah_end + 1):
-        data = await get_ayah(f"{surah}:{n}", reciter_key=reciter_key, audio_bitrate=audio_bitrate)
-        ayahs.append(data)
+    ayahs = await asyncio.gather(
+        *[get_ayah(f"{surah}:{n}", reciter_key=reciter_key, audio_bitrate=audio_bitrate)
+          for n in range(ayah_start, ayah_end + 1)]
+    )
+    # asyncio.gather يرجع النتائج بنفس ترتيب الطلبات دايمًا، فترتيب الآيات مضمون
+    # حتى لو وصلت الردود من الشبكة بترتيب مختلف.
 
     combined_text = " ".join(a["ayah_text"] for a in ayahs)
 
@@ -118,29 +126,26 @@ async def get_ayah_range(
 
 async def download_and_concat_audio(audio_urls: list[str]) -> bytes:
     """
-    يحمّل عدة ملفات صوت (لآيات متتالية) ويدمجها بملف mp3 واحد متصل
-    عبر ffmpeg concat demuxer (بدون إعادة ترميز، سريع وبلا فقدان جودة).
+    يحمّل عدة ملفات صوت (لآيات متتالية) بالتوازي (مو وحدة وحدة، أسرع بكثير)
+    ويدمجها بملف mp3 واحد متصل عبر ffmpeg concat demuxer (بدون إعادة ترميز).
     """
-    import subprocess
-    import tempfile
-    import os
-    import uuid
-
     if len(audio_urls) == 1:
         return await download_audio(audio_urls[0])
 
     work_dir = tempfile.mkdtemp(prefix=f"concat_{uuid.uuid4().hex}_")
-    file_paths = []
+    file_paths = [os.path.join(work_dir, f"part_{i:03d}.mp3") for i in range(len(audio_urls))]
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            for i, url in enumerate(audio_urls):
+        async def _fetch_one(url: str, path: str):
+            async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(url)
                 if resp.status_code != 200:
                     raise QuranAPIError(f"تعذر تحميل الصوت من {url}")
-                path = os.path.join(work_dir, f"part_{i:03d}.mp3")
                 with open(path, "wb") as f:
                     f.write(resp.content)
-                file_paths.append(path)
+
+        # كل ملفات الصوت تُحمّل بالتوازي بدل التسلسل — يوفر وقت كبير خصوصًا
+        # على استضافة فيها زمن استجابة أعلى (Cold Start) أو مقاطع بعدة آيات.
+        await asyncio.gather(*[_fetch_one(u, p) for u, p in zip(audio_urls, file_paths)])
 
         list_path = os.path.join(work_dir, "list.txt")
         with open(list_path, "w") as f:
