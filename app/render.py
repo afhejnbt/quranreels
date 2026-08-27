@@ -20,7 +20,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 RAQM_LAYOUT = ImageFont.Layout.RAQM
 
-WIDTH, HEIGHT = 1080, 1920
+WIDTH, HEIGHT = 720, 1280  # 9:16 — أنزلناها من 1080×1920 لتقليل استهلاك الذاكرة
+# (كل الأبعاد والخطوط بالأسفل محسوبة بنفس النسب على الحجم الجديد)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_AYAH = os.path.join(BASE_DIR, "fonts", "AmiriQuran-Regular.ttf")
@@ -47,10 +48,10 @@ PALETTES = [
 GRADIENT_DIRECTION_NAMES = ["vertical", "diag_tlbr", "diag_trbl", "horizontal"]
 
 # منطقة عرض نص الآية (بين شريط العنوان وهامش الأسفل)
-REGION_TOP = 300
-REGION_BOTTOM = HEIGHT - 140
+REGION_TOP = 200
+REGION_BOTTOM = HEIGHT - 93
 REGION_HEIGHT = REGION_BOTTOM - REGION_TOP
-LINE_MARGIN_X = 90
+LINE_MARGIN_X = 60
 MAX_TEXT_WIDTH = WIDTH - 2 * LINE_MARGIN_X
 
 
@@ -83,15 +84,15 @@ def _font_size_for_length(char_count: int) -> int:
     """يختار حجم خط مناسب حسب طول الآية، حتى تبقى القراءة مريحة دائمًا
     (بدل تصغير الخط بشكل عشوائي لين "يعصر" النص بالشاشة)."""
     if char_count <= 60:
-        return 118
+        return 79
     elif char_count <= 130:
-        return 92
+        return 61
     elif char_count <= 260:
-        return 74
+        return 49
     elif char_count <= 450:
-        return 62
+        return 41
     else:
-        return 54
+        return 36
 
 
 def choose_palette(index: int | None = None) -> dict:
@@ -153,10 +154,10 @@ def build_label_overlay(surah_label: str, accent: tuple[int, int, int] = (212, 1
     """طبقة ثابتة فيها اسم السورة ورقم الآية فقط (أعلى الشاشة)، لا تتحرك أبدًا."""
     img = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    font = _load_font(FONT_UI, 46)
+    font = _load_font(FONT_UI, 31)
     w = _text_width(draw, surah_label, font)
     fill = (accent[0], accent[1], accent[2], 255)
-    draw.text(((WIDTH - w) // 2, 140), surah_label, font=font, fill=fill, direction="rtl")
+    draw.text(((WIDTH - w) // 2, 93), surah_label, font=font, fill=fill, direction="rtl")
 
     out_path = os.path.join(tempfile.gettempdir(), f"label_{uuid.uuid4().hex}.png")
     img.save(out_path)
