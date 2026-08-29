@@ -20,13 +20,13 @@ Quran Reels API
     - ayah       : رقم آية واحدة داخل السورة
     - ayah_start : أول آية بمقطع من عدة آيات (بدل ayah)
     - ayah_end   : آخر آية بمقطع من عدة آيات (لازم تكون مع ayah_start)
-    - random     : true لاختيار آية عشوائية من كامل القرآن
+    - random     : true لاختيار سورة عشوائية + مقطع عشوائي (1-4 آيات) منها
     - reciter    : alafasy (افتراضي) / sudais / husary / minshawi
     - palette    : رقم خلفية محدد (0-5). فاضي = عشوائي كل مرة.
 
   أمثلة:
     /generate?surah=2&ayah=255&reciter=alafasy
-    /generate?surah=2&ayah_start=1&ayah_end=5&palette=3
+    /generate?surah=2&ayah_start=1&ayah_end=4&palette=3
     /generate?random=true
 """
 import os
@@ -43,7 +43,7 @@ from app.quran import (
     QuranAPIError,
     get_ayah,
     get_ayah_range,
-    random_ayah_reference,
+    random_ayah_range,
     download_audio,
     download_and_concat_audio,
 )
@@ -52,8 +52,8 @@ from app.render import (
     build_ayah_overlay,
     render_video,
     choose_palette,
-    PALETTES,
-    PALETTE_NAMES,
+    ACCENT_COLORS,
+    ACCENT_NAMES,
 )
 
 app = FastAPI(
@@ -77,7 +77,7 @@ async def list_reciters():
 @app.get("/palettes")
 async def list_palettes():
     """يرجع قائمة الخلفيات المتاحة بالاسم ورقمها، يفيد باختيار خلفية محددة من Google Sheet."""
-    return {"palettes": [{"index": i, "name": name} for i, name in enumerate(PALETTE_NAMES)]}
+    return {"palettes": [{"index": i, "name": name} for i, name in enumerate(ACCENT_NAMES)]}
 
 
 def _cleanup(*paths: str):
@@ -124,22 +124,23 @@ async def generate(
     ayah = _opt_int(ayah, "ayah", 1)
     ayah_start = _opt_int(ayah_start, "ayah_start", 1)
     ayah_end = _opt_int(ayah_end, "ayah_end", 1)
-    palette_index = _opt_int(palette, "palette", 0, len(PALETTES) - 1)
+    palette_index = _opt_int(palette, "palette", 0, len(ACCENT_COLORS) - 1)
 
     is_range = ayah_start is not None or ayah_end is not None
 
     # 1) تحديد الآية/المقطع المطلوب وجلب النص + الصوت
     if random_verse or (surah is None and ayah is None and not is_range):
-        reference = random_ayah_reference()
+        # عشوائي بالكامل: سورة عشوائية + مقطع عشوائي من 1 إلى 4 آيات داخلها
+        r_surah, r_start, r_end = random_ayah_range()
         try:
-            data = await get_ayah(reference, reciter_key=reciter)
+            data = await get_ayah_range(r_surah, r_start, r_end, reciter_key=reciter)
         except QuranAPIError as e:
             raise HTTPException(502, str(e))
         try:
-            audio_bytes = await download_audio(data["audio_url"])
+            audio_bytes = await download_and_concat_audio(data["audio_urls"])
         except QuranAPIError as e:
             raise HTTPException(502, str(e))
-        ayah_label_number = str(data["ayah_number_in_surah"])
+        ayah_label_number = data["ayah_range_label"]
 
     elif is_range:
         if surah is None or ayah_start is None or ayah_end is None:

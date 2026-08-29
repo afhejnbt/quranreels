@@ -5,7 +5,8 @@
   بدل تصغير الخط بشكل مبالغ فيه أو قصّ النص.
 
 الطبقات:
-  1) خلفية متدرجة (ffmpeg lavfi)
+  1) خلفية سوداء صرفة (تُولَّد مباشرة داخل ffmpeg، بدون أي ملف صورة — أرخص
+     حالة ممكنة على المعالج، أرخص حتى من صورة PNG محمّلة من القرص)
   2) طبقة ثابتة: اسم السورة ورقم الآية (أعلى الشاشة)
   3) طبقة نص الآية: ثابتة أو متحركة حسب الطول
   4) الصوت (تلاوة)
@@ -27,25 +28,18 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_AYAH = os.path.join(BASE_DIR, "fonts", "AmiriQuran-Regular.ttf")
 FONT_UI = os.path.join(BASE_DIR, "fonts", "NotoKufiArabic.ttf")
 
-# مجموعة لوحات ألوان (خلفية علوية/سفلية + لون العنوان) — تُختار عشوائيًا كل مرة
-# حتى ما تكون كل الفيديوهات متطابقة بصريًا. الألوان مختارة لتبقى هادئة ومناسبة
-# لمحتوى قرآني (لا صور/فيديوهات خارجية، فقط تدرجات تركيبية بدون أي مشاكل حقوق).
-# كل لوحة لها اسم صريح يفيد باختيارها يدويًا من Google Sheet / Make (عبر رقمها 0-5).
-PALETTE_NAMES = ["أخضر داكن", "كحلي بنفسجي", "بني دافئ", "تركوازي", "عنابي", "أزرق مخضر"]
-
-PALETTES = [
-    {"top": "0x0b2e28", "bottom": "0x08151a", "accent": (212, 175, 55)},   # 0: أخضر داكن + ذهبي
-    {"top": "0x1a2a4a", "bottom": "0x0a0e1a", "accent": (201, 162, 255)},  # 1: كحلي + بنفسجي فاتح
-    {"top": "0x2e1a0b", "bottom": "0x140a05", "accent": (230, 190, 120)},  # 2: بني دافئ + كريمي
-    {"top": "0x0d2b3e", "bottom": "0x061119", "accent": (120, 200, 210)},  # 3: تركوازي داكن + سماوي
-    {"top": "0x2a0b2e", "bottom": "0x0f0514", "accent": (220, 150, 190)},  # 4: عنابي داكن + وردي فاتح
-    {"top": "0x0b1f2e", "bottom": "0x05090f", "accent": (170, 210, 160)},  # 5: كحلي مزرق + أخضر فاتح
+# الخلفية سوداء صرفة دائمًا (بدون أي تدرج) — أرخص شي ممكن على المعالج.
+# نبقي فقط تنويع لون العنوان (accent) بين الفيديوهات، حتى ما تكون كل
+# الفيديوهات متطابقة بصريًا 100%، بدون أي تكلفة إضافية على الترميز.
+ACCENT_COLORS = [
+    (212, 175, 55),   # ذهبي
+    (201, 162, 255),  # بنفسجي فاتح
+    (230, 190, 120),  # كريمي
+    (120, 200, 210),  # سماوي
+    (220, 150, 190),  # وردي فاتح
+    (170, 210, 160),  # أخضر فاتح
 ]
-
-# اتجاهات تدرج متنوعة — أسماء بسيطة تُستخدم لرسم الخلفية كصورة PIL ثابتة
-# (بدل حسابها رياضيًا لكل فريم بالفيديو عبر ffmpeg، وهذا يوفر ذاكرة كبيرة
-# على استضافات محدودة الموارد زي الخطة المجانية من Render).
-GRADIENT_DIRECTION_NAMES = ["vertical", "diag_tlbr", "diag_trbl", "horizontal"]
+ACCENT_NAMES = ["ذهبي", "بنفسجي فاتح", "كريمي", "سماوي", "وردي فاتح", "أخضر فاتح"]
 
 # منطقة عرض نص الآية (بين شريط العنوان وهامش الأسفل)
 REGION_TOP = 200
@@ -100,54 +94,16 @@ def choose_palette(index: int | None = None) -> dict:
     يختار لوحة ألوان: رقم محدد (0-5) إذا انطلب، وإلا عشوائيًا.
     اتجاه التدرج دايمًا عشوائي (حتى لو نفس اللوحة، يختلف شكلها شوي كل مرة).
     """
+def choose_palette(index: int | None = None) -> dict:
+    """
+    يختار لون عنوان (accent): رقم محدد (0-5) إذا انطلب، وإلا عشوائيًا.
+    الخلفية سوداء صرفة دائمًا (بدون أي تدرج) — أرخص حالة ممكنة على المعالج.
+    """
     if index is not None:
-        palette = dict(PALETTES[index % len(PALETTES)])
+        accent = ACCENT_COLORS[index % len(ACCENT_COLORS)]
     else:
-        palette = dict(random.choice(PALETTES))
-    palette["direction_name"] = random.choice(GRADIENT_DIRECTION_NAMES)
-    return palette
-
-
-def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
-    h = hex_color.replace("0x", "")
-    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-
-
-def build_gradient_background(palette: dict) -> str:
-    """
-    يرسم خلفية متدرجة كصورة PNG ثابتة (مرة وحدة بس، رخيصة على الذاكرة):
-    نرسم رقعة صغيرة (64×64) فيها التدرج بالاتجاه المطلوب، ثم نكبّرها بسلاسة
-    لحجم الفيديو الكامل. هذا أخف بكثير من حساب التدرج رياضيًا لكل فريم بالفيديو
-    (اللي كان يستهلك ذاكرة زايدة وتسبب بتوقف الخدمة على استضافة محدودة الموارد).
-    """
-    top = _hex_to_rgb(palette["top"])
-    bottom = _hex_to_rgb(palette["bottom"])
-    direction = palette.get("direction_name", "vertical")
-
-    patch_size = 64
-    patch = Image.new("RGB", (patch_size, patch_size))
-    pixels = patch.load()
-    denom = 2 * (patch_size - 1)
-    for y in range(patch_size):
-        for x in range(patch_size):
-            if direction == "vertical":
-                t = y / (patch_size - 1)
-            elif direction == "horizontal":
-                t = x / (patch_size - 1)
-            elif direction == "diag_tlbr":
-                t = (x + y) / denom
-            else:  # diag_trbl
-                t = ((patch_size - 1 - x) + y) / denom
-            pixels[x, y] = (
-                int(top[0] + (bottom[0] - top[0]) * t),
-                int(top[1] + (bottom[1] - top[1]) * t),
-                int(top[2] + (bottom[2] - top[2]) * t),
-            )
-
-    bg = patch.resize((WIDTH, HEIGHT), Image.BILINEAR)
-    out_path = os.path.join(tempfile.gettempdir(), f"bg_{uuid.uuid4().hex}.png")
-    bg.save(out_path)
-    return out_path
+        accent = random.choice(ACCENT_COLORS)
+    return {"accent": accent}
 
 
 def build_label_overlay(surah_label: str, accent: tuple[int, int, int] = (212, 175, 55)) -> str:
@@ -208,21 +164,23 @@ def get_audio_duration(audio_path: str) -> float:
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", audio_path,
         ],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, timeout=30,
     )
     return float(result.stdout.strip())
 
 
 def render_video(label_png: str, ayah_png: str, ayah_height: int, needs_scroll: bool,
                   audio_path: str, output_path: str, palette: dict | None = None) -> None:
-    """يدمج: خلفية متدرجة ثابتة (صورة، تختلف ألوانها واتجاهها كل مرة) + طبقة العنوان + طبقة الآية + الصوت كاملاً."""
+    """يدمج: خلفية سوداء صرفة (تُولَّد مباشرة داخل ffmpeg) + طبقة العنوان + طبقة الآية + الصوت كاملاً."""
     if palette is None:
         palette = choose_palette()
 
     duration = get_audio_duration(audio_path)
     total_duration = duration + 0.8  # هامش بسيط بالنهاية حتى ما ينقطع الصوت فجأة
 
-    background_png = build_gradient_background(palette)
+    # مصدر لون ثابت (أسود) يُولَّد داخل ffmpeg مباشرة — بدون قراءة أي ملف صورة
+    # من القرص أو فك تشفير PNG. أرخص مصدر فيديو ممكن على الإطلاق للمعالج.
+    black_bg = f"color=c=black:s={WIDTH}x{HEIGHT}:r=30"
 
     if needs_scroll:
         crop_y_max = ayah_height - REGION_HEIGHT
@@ -242,7 +200,7 @@ def render_video(label_png: str, ayah_png: str, ayah_height: int, needs_scroll: 
 
     cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", background_png,
+        "-f", "lavfi", "-i", black_bg,
         "-loop", "1", "-i", label_png,
         "-loop", "1", "-i", ayah_png,
         "-i", audio_path,
@@ -258,11 +216,15 @@ def render_video(label_png: str, ayah_png: str, ayah_height: int, needs_scroll: 
         output_path,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True)
+        # مهلة زمنية صريحة (150 ثانية): لو ffmpeg علّق لأي سبب (ضعف معالج
+        # الاستضافة المجانية مثلاً)، نفشل بسرعة برسالة واضحة، بدل ما نعلّق
+        # بصمت لين تنتهي مهلة Make الخارجية بدون أي تفسير.
+        result = subprocess.run(cmd, capture_output=True, timeout=150)
         if result.returncode != 0:
             raise RuntimeError(f"فشل ffmpeg:\n{result.stderr.decode(errors='ignore')[-2000:]}")
-    finally:
-        try:
-            os.remove(background_png)
-        except OSError:
-            pass
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "تجاوز توليد الفيديو 150 ثانية ولم يكتمل — على الأغلب معالج "
+            "الاستضافة الحالية بطيء جدًا لهذه العملية. جرّب ترقية خطة "
+            "الاستضافة، أو استخدام آية/مقطع أقصر."
+        )
