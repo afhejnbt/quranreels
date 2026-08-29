@@ -15,7 +15,9 @@ QURAN_API_BASE = "https://api.alquran.cloud/v1"
 CDN_AUDIO_BASE = "https://cdn.islamic.network/quran/audio"
 
 TOTAL_AYAHS_IN_QURAN = 6236
-MAX_AYAHS_PER_SEGMENT = 4  # أقصى عدد آيات بالمقطع الواحد (يضمن فيديو قصير وسريع المعالجة)
+MAX_AYAHS_PER_SEGMENT = 4  # الحد الافتراضي لمقطع محدد يدويًا (surah+ayah_start+ayah_end)
+MAX_AYAHS_PER_SEGMENT_RANDOM = 12  # أقصى حد نسمح نوسّع له تلقائيًا بوضع العشوائي فقط
+MIN_RANDOM_DURATION_SECONDS = 20  # أقل مدة مقبولة للفيديو العشوائي (بالثواني)
 
 # عدد آيات كل سورة (1-114) — بيانات هيكلية ثابتة، يستخدمها الاختيار العشوائي
 # عشان يعرف حدود كل سورة (ما يطلب آية رقم أكبر من عدد آيات السورة).
@@ -113,17 +115,20 @@ async def get_ayah_range(
     ayah_end: int,
     reciter_key: str = DEFAULT_RECITER,
     audio_bitrate: int = 128,
+    max_segment: int = MAX_AYAHS_PER_SEGMENT,
 ):
     """
     يجلب نطاق آيات متتالية من نفس السورة (مثلاً 2:1 إلى 2:5) ويرجعها كوحدة واحدة:
     نص مدمج (يُعرض ككتلة واحدة، والمقطع الطويل يتحرك تلقائيًا بفضل build_ayah_overlay)
     + قائمة روابط صوت كل آية على حدة (تُدمج لاحقًا بملف صوت واحد قبل توليد الفيديو).
+    max_segment: الحد الأقصى المسموح لهذا الاستدعاء تحديدًا (يفيد بوضع العشوائي
+    اللي يوسّع الحد تدريجيًا لو المقطع القصير طلع أقصر من المدة المطلوبة).
     """
     if ayah_end < ayah_start:
         raise QuranAPIError("رقم آخر آية لازم يكون أكبر من أو يساوي أول آية")
-    if (ayah_end - ayah_start + 1) > MAX_AYAHS_PER_SEGMENT:
+    if (ayah_end - ayah_start + 1) > max_segment:
         raise QuranAPIError(
-            f"الحد الأقصى {MAX_AYAHS_PER_SEGMENT} آيات بالمقطع الواحد "
+            f"الحد الأقصى {max_segment} آيات بالمقطع الواحد "
             "(حتى يضل الفيديو قصير وسريع المعالجة على أي خطة استضافة)"
         )
 
