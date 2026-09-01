@@ -214,3 +214,116 @@ async def download_audio(audio_url: str) -> bytes:
         if resp.status_code != 200:
             raise QuranAPIError(f"تعذر تحميل الصوت من {audio_url}")
         return resp.content
+
+
+def get_audio_duration(audio_path: str) -> float:
+    """يقيس مدة ملف صوتي بالثواني باستخدام ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", audio_path,
+        ],
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    return float(result.stdout.strip())
+
+
+def _global_ayah_to_surah_ayah(global_ayah: int) -> tuple[int, int]:
+    """يحول رقم آية إجمالي (1-6236) إلى (سورة, آية داخل السورة)."""
+    remaining = global_ayah
+    for surah in range(1, 115):
+        count = SURAH_AYAH_COUNTS[surah]
+        if remaining <= count:
+            return surah, remaining
+        remaining -= count
+    return 114, 6  # fallback (نادر جدًا)
+
+
+async def smart_random_segment(
+    reciter_key: str = DEFAULT_RECITER,
+    min_duration: float = MIN_RANDOM_DURATION_SECONDS,
+    max_ayahs: int = MAX_AYAHS_PER_SEGMENT_RANDOM,
+    audio_bitrate: int = 128,
+):
+    """
+    يختار مقطع عشوائي ذكي ببناء تدريجي:
+    - يختار آية بداية عشوائية من القرآن كاملاً (1-6236)
+    - يحمل كل الآيات المحتملة (حتى max_ayahs) بالتوازي من نفس السورة
+    - يقيس مدة كل صوت على حدة بـ ffprobe (سريع)
+    - يجمع المدد تدريجيًا حتى الوصول للمدة المطلوبة
+    - يدمج فقط الآيات المطلوبة
+    - يعيد المحاولة بالكامل فقط إذا استنفذ كل الآيات المتاحة وما زالت المدة غير كافية
+
+    هذا يحل مشكلة إعادة المحاولة العشوائية العشرات من المرات، لأننا نبني على نفس
+    نقطة البداية ونضيف آيات تدريجيًا بدل رمي كل شيء وبدء من جديد.
+    """
+    for attempt in range(20):  # حد أمان نهائي
+        # اختيار آية بداية عشوائية من القرآن كاملاً
+        global_ayah = random.randint(1, TOTAL_AYAHS_IN_QURAN)
+        surah, start = _global_ayah_to_surah_ayah(global_ayah)
+        total_ayahs = SURAH_AYAH_COUNTS[surah]
+
+        # عدد الآيات المتاحة من نقطة البداية (لا يتجاوز max_ayahs)
+        available = min(max_ayahs, total_ayahs - start + 1)
+
+        # جلب بيانات الآيات بالتوازي
+        ayah_tasks = [
+            get_ayah(f"{surah}:{n}", reciter_key=reciter_key, audio_bitrate=audio_bitrate)
+            for n in range(start, start + available)
+        ]
+        ayahs = await asyncio.gather(*ayah_tasks)
+
+        # تحميل كل الصوتيات بالتوازي
+        audio_urls = [a["audio_url"] for a in ayahs]
+        audio_bytes_list = await asyncio.gather(*[download_audio(url) for url in audio_urls])
+
+        # قياس مدة كل صوت على حدة (سريع جدًا - ffprobe على ملف صغير)
+        temp_paths = []
+        durations = []
+        for audio_bytes in audio_bytes_list:
+            path = os.path.join(tempfile.gettempdir(), f"dur_{uuid.uuid4().hex}.mp3")
+            with open(path, "wb") as f:
+                f.write(audio_bytes)
+            temp_paths.append(path)
+            durations.append(get_audio_duration(path))
+
+        # نجمع المدد تدريجيًا ونحدد عدد الآيات المطلوبة
+        accumulated = 0.0
+        needed_count = 0
+        for i, dur in enumerate(durations):
+            accumulated += dur
+            needed_count = i + 1
+            if accumulated >= min_duration:
+                break
+
+        # تنظيف الملفات المؤقتة
+        for p in temp_paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+        if accumulated >= min_duration:
+            # ندمج فقط الآيات المطلوبة
+            needed_urls = audio_urls[:needed_count]
+            final_audio = await download_and_concat_audio(needed_urls)
+
+            end = start + needed_count - 1
+            return {
+                "ayah_text": " ".join(a["ayah_text"] for a in ayahs[:needed_count]),
+                "surah_name_ar": ayahs[0]["surah_name_ar"],
+                "surah_name_en": ayahs[0]["surah_name_en"],
+                "surah_number": ayahs[0]["surah_number"],
+                "ayah_number_in_surah": start,
+                "ayah_range_label": f"{start}-{end}" if end > start else str(start),
+                "audio_bytes": final_audio,
+                "reciter_key": reciter_key,
+            }
+
+        # إذا وصلنا هنا: المدة غير كافية حتى مع كل الآيات المتاحة
+        # نعيد المحاولة بآية بداية جديدة (سورة جديدة)
+
+    raise QuranAPIError(
+        f"تعذر إيجاد مقطع عشوائي بالمدة المطلوبة ({min_duration}ث) بعد 20 محاولة. "
+        "جرّب تقليل المدة المطلوبة أو زيادة max_ayahs."
+    )

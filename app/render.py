@@ -19,6 +19,8 @@ import uuid
 
 from PIL import Image, ImageDraw, ImageFont
 
+from app.quran import get_audio_duration
+
 RAQM_LAYOUT = ImageFont.Layout.RAQM
 
 WIDTH, HEIGHT = 720, 1280  # 9:16 — أنزلناها من 1080×1920 لتقليل استهلاك الذاكرة
@@ -158,15 +160,6 @@ def build_ayah_overlay(ayah_text: str) -> tuple[str, int, bool]:
     return out_path, canvas_height, needs_scroll
 
 
-def get_audio_duration(audio_path: str) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", audio_path,
-        ],
-        capture_output=True, text=True, check=True, timeout=30,
-    )
-    return float(result.stdout.strip())
 
 
 def render_video(label_png: str, ayah_png: str, ayah_height: int, needs_scroll: bool,

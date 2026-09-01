@@ -48,6 +48,8 @@ from app.quran import (
     random_ayah_range,
     download_audio,
     download_and_concat_audio,
+    smart_random_segment,
+    get_audio_duration,
 )
 from app.render import (
     build_label_overlay,
@@ -56,7 +58,6 @@ from app.render import (
     choose_palette,
     ACCENT_COLORS,
     ACCENT_NAMES,
-    get_audio_duration,
 )
 
 app = FastAPI(
@@ -130,38 +131,19 @@ async def generate(
     palette_index = _opt_int(palette, "palette", 0, len(ACCENT_COLORS) - 1)
 
     is_range = ayah_start is not None or ayah_end is not None
-    audio_path: str | None = None  # يتحدد بوضع العشوائي أثناء حلقة إعادة المحاولة أدناه
 
     # 1) تحديد الآية/المقطع المطلوب وجلب النص + الصوت
     if random_verse or (surah is None and ayah is None and not is_range):
-        # عشوائي: نبدأ بمقطع صغير (1-4 آيات)، ولو طلعت مدة الصوت الفعلية قصيرة
-        # (أقل من 20 ثانية — غير مناسبة للنشر)، نوسّع المقطع تدريجيًا ونعيد
-        # المحاولة تلقائيًا، لين نوصل لمدة كافية أو نضرب حد أقصى أمان.
-        for attempt_max_len in (4, 6, 8, MAX_AYAHS_PER_SEGMENT_RANDOM):
-            r_surah, r_start, r_end = random_ayah_range(max_len=attempt_max_len)
-            try:
-                data = await get_ayah_range(
-                    r_surah, r_start, r_end, reciter_key=reciter,
-                    max_segment=MAX_AYAHS_PER_SEGMENT_RANDOM,
-                )
-            except QuranAPIError as e:
-                raise HTTPException(502, str(e))
-            try:
-                audio_bytes = await download_and_concat_audio(data["audio_urls"])
-            except QuranAPIError as e:
-                raise HTTPException(502, str(e))
+        # وضع عشوائي ذكي: يبني المقطع تدريجيًا بدل إعادة المحاولة العشوائية العشرات من المرات.
+        # يختار آية بداية عشوائية من القرآن كاملاً، يحمل كل الآيات المحتملة بالتوازي،
+        # يقيس مدة كل صوت على حدة، يجمع المدد تدريجيًا حتى الوصول للمدة المطلوبة،
+        # ثم يدمج فقط الآيات المطلوبة. يعيد المحاولة بالكامل فقط في حالات نادرة.
+        try:
+            data = await smart_random_segment(reciter_key=reciter)
+        except QuranAPIError as e:
+            raise HTTPException(502, str(e))
 
-            # نفحص المدة الفعلية بسرعة (بدون رسم أو ترميز فيديو، بس فحص الصوت)
-            check_path = os.path.join(tempfile.gettempdir(), f"check_{uuid.uuid4().hex}.mp3")
-            with open(check_path, "wb") as f:
-                f.write(audio_bytes)
-            duration = get_audio_duration(check_path)
-
-            if duration >= MIN_RANDOM_DURATION_SECONDS or attempt_max_len == MAX_AYAHS_PER_SEGMENT_RANDOM:
-                audio_path = check_path
-                break
-            os.remove(check_path)
-
+        audio_bytes = data["audio_bytes"]
         ayah_label_number = data["ayah_range_label"]
 
     elif is_range:
@@ -198,12 +180,9 @@ async def generate(
     work_id = uuid.uuid4().hex
     output_path = os.path.join(tempfile.gettempdir(), f"video_{work_id}.mp4")
 
-    if audio_path is None:
-        # وضع الآية الوحدة أو المقطع المحدد يدويًا: لسا ما كتبنا ملف الصوت
-        audio_path = os.path.join(tempfile.gettempdir(), f"audio_{work_id}.mp3")
-        with open(audio_path, "wb") as f:
-            f.write(audio_bytes)
-    # (وضع العشوائي: audio_path مكتوب أصلاً من حلقة إعادة المحاولة فوق)
+    audio_path = os.path.join(tempfile.gettempdir(), f"audio_{work_id}.mp3")
+    with open(audio_path, "wb") as f:
+        f.write(audio_bytes)
 
     # 2) رسم الطبقات: لوحة ألوان (محددة أو عشوائية) + العنوان + نص الآية/المقطع
     palette = choose_palette(index=palette_index)
